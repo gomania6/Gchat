@@ -1,0 +1,24 @@
+name: gChat
+version: 1.0.0
+main: com.Gomania.gChat.GChat
+api-version: 1.21
+softdepend: [PlaceholderAPI]
+
+commands:
+  gchat:
+    description: gChat commands
+    usage: /gchat [reload|help]
+    aliases: [gch]
+  g:
+    description: Switch to global chat or send global message
+    usage: /g [message]
+    aliases: [global]
+  l:
+    description: Switch to local chat or send local message
+    usage: /l [message]
+    aliases: [local]
+
+permissions:
+  gchat.reload:
+    description: Allows to reload gChat configuration
+    default: op

@@ -1,0 +1,35 @@
+# gChat Configuration
+
+# Chat modes: local (default) or global
+default-chat-mode: local
+
+# Local chat settings
+local-chat:
+  enabled: true
+  radius: 50
+  format: "&8[Локально]"
+  show-silent-message: true
+
+# Global chat settings
+global-chat:
+  enabled: true
+  format: "&8[Глобально]"
+
+# Default format if no permission matches
+default-format: "%gchat_format% %player_name% &7» %message%"
+
+# Group-based formats
+group-formats:
+  admin: "%gchat_format% {#FF5555>}АДМИН{#FFAAAA<} {#FF5555>}%player_name%{#FFAAAA<} &8» %message%"
+  moderator: "%gchat_format% {#5555FF>}МОДЕРАТОР{#AAAACC<} {#5555FF>}%player_name%{#AAAACC<} &8» %message%"
+  vip: "%gchat_format% {#FFFF55>}VIP{#FFFFAA<} {#FFFF55>}%player_name%{#FFFFAA<} &8» %message%"
+  builder: "%gchat_format% {#55FF55>}СТРОИТЕЛЬ{#AAFFAA<} {#55FF55>}%player_name%{#AAFFAA<} &8» %message%"
+
+# Enable/disable chat formatting
+enabled: true
+
+# Log formatted messages to console
+log-to-console: false
+
+# Reload command cooldown (in seconds)
+reload-cooldown: 5
