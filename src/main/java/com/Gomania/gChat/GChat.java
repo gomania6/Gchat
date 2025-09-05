@@ -98,7 +98,7 @@ public class GChat extends JavaPlugin implements Listener {
         // Обновляем статус PlaceholderAPI после перезагрузки
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
     }
-    
+
     private String formatMessage(Player player, String message, String chatMode) {
         String baseFormat;
 
@@ -108,16 +108,13 @@ public class GChat extends JavaPlugin implements Listener {
             baseFormat = config.getString("global-chat.format", "&8[Глобально]");
         }
 
-        // ИГНОРИРУЕМ OP ПРАВА - определяем формат только по группам
+        // Определяем группу через LuckPerms
         String playerGroup = getPlayerGroup(player);
         String groupFormat = null;
-
-        getLogger().info("Player " + player.getName() + " (OP: " + player.isOp() + ") detected group: " + playerGroup);
 
         // Сначала проверяем группу из LuckPerms
         if (playerGroup != null && config.isConfigurationSection("group-formats")) {
             groupFormat = config.getString("group-formats." + playerGroup);
-            getLogger().info("Group format for " + playerGroup + ": " + groupFormat);
         }
 
         // Если не нашли по группе, проверяем пермишены как fallback
@@ -125,7 +122,6 @@ public class GChat extends JavaPlugin implements Listener {
             for (String group : config.getConfigurationSection("group-formats").getKeys(false)) {
                 if (player.hasPermission("gchat.group." + group)) {
                     groupFormat = config.getString("group-formats." + group);
-                    getLogger().info("Found format via permission gchat.group." + group);
                     break;
                 }
             }
@@ -134,75 +130,55 @@ public class GChat extends JavaPlugin implements Listener {
         String finalFormat = (groupFormat != null) ? groupFormat :
                 config.getString("default-format", "%player_name% &7» %message%");
 
-        getLogger().info("Raw format for " + player.getName() + ": " + finalFormat);
-
-        // ЗАМЕНЯЕМ ПЛЕЙСХОЛДЕРЫ В ПРАВИЛЬНОМ ПОРЯДКЕ!
-
-        // 1. Сначала заменяем %gchat_format% на базовый формат
+        // Обработка формата
         finalFormat = finalFormat.replace("%gchat_format%", baseFormat != null ? baseFormat : "");
-
-        // 2. Затем заменяем другие плейсхолдеры (player_name, displayname и т.д.)
         finalFormat = replacePlaceholders(player, finalFormat);
-
-        // 3. Заменяем %message% на обработанное сообщение (уже с градиентами и цветами)
         finalFormat = finalFormat.replace("%message%", message);
-
-        // 4. Применяем цветовые коды
         finalFormat = finalFormat.replace("&", "§");
-
-        // 5. Применяем градиенты ко всему формату
         finalFormat = applyGradients(finalFormat);
-
-        // 6. Добавляем reset в конце чтобы избежать проблем с цветами
         finalFormat += "§r";
-
-        getLogger().info("Final formatted message for " + player.getName() + ": " + finalFormat.replace("§", "&"));
 
         return finalFormat;
     }
 
     private String getPlayerGroup(Player player) {
-        // УБИРАЕМ ПРОВЕРКУ НА OP - игнорируем OP права, ищем только группы
-
-        // Получаем все пермишены игрока и ищем групповые
-        try {
-            // Этот метод может не работать на всех версиях, но стоит попробовать
-            Class<?> permissibleClass = player.getClass();
-            java.lang.reflect.Field permField = null;
-
-            // Пытаемся получить доступ к пермишенам через рефлексию
+        // Только через LuckPerms API, без fallback на пермишены
+        if (Bukkit.getPluginManager().getPlugin("LuckPerms") != null) {
             try {
-                permField = permissibleClass.getDeclaredField("perm");
-                permField.setAccessible(true);
-                Object perm = permField.get(player);
+                Class<?> luckPermsClass = Class.forName("net.luckperms.api.LuckPerms");
+                Object serviceRegistration = Bukkit.getServicesManager().getRegistration(luckPermsClass);
 
-                if (perm != null) {
-                    // Пытаемся получить список пермишенов
-                    java.lang.reflect.Field permissionsField = perm.getClass().getDeclaredField("permissions");
-                    permissionsField.setAccessible(true);
-                    @SuppressWarnings("unchecked")
-                    Map<String, Boolean> permissions = (Map<String, Boolean>) permissionsField.get(perm);
+                if (serviceRegistration != null) {
+                    Object luckPerms = serviceRegistration.getClass().getMethod("getProvider").invoke(serviceRegistration);
+                    Object userManager = luckPerms.getClass().getMethod("getUserManager").invoke(luckPerms);
+                    Object user = userManager.getClass().getMethod("getUser", UUID.class).invoke(userManager, player.getUniqueId());
 
-                    for (String permission : permissions.keySet()) {
-                        if (permission.startsWith("group.") && permissions.get(permission)) {
-                            String group = permission.substring(6); // Убираем "group."
-                            if (!group.isEmpty()) {
-                                getLogger().info("Found group permission: " + permission + " for player: " + player.getName());
-                                return group;
+                    if (user != null) {
+                        String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
+                        if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) {
+                            return primaryGroup.toLowerCase();
+                        }
+
+                        // Если primary group = default, ищем в inheritance
+                        Object nodes = user.getClass().getMethod("getNodes").invoke(user);
+                        if (nodes instanceof Iterable) {
+                            for (Object node : (Iterable<?>) nodes) {
+                                if (node.getClass().getSimpleName().equals("InheritanceNode")) {
+                                    String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
+                                    if (groupName != null && !groupName.equalsIgnoreCase("default")) {
+                                        return groupName.toLowerCase();
+                                    }
+                                }
                             }
                         }
                     }
                 }
             } catch (Exception e) {
-                // Если рефлексия не работает, используем простой способ
-                getLogger().warning("Reflection failed for " + player.getName() + ", using simple group detection: " + e.getMessage());
+                getLogger().warning("Failed to get group from LuckPerms: " + e.getMessage());
             }
-        } catch (Exception e) {
-            getLogger().warning("Error in group detection for " + player.getName() + ": " + e.getMessage());
         }
 
-        // Fallback: простая проверка основных групп (ДАЖЕ ДЛЯ OP ИГРОКОВ)
-        return getGroupFromSimpleCheck(player);
+        return null;
     }
 
     private String getGroupFromSimpleCheck(Player player) {
@@ -444,10 +420,52 @@ public class GChat extends JavaPlugin implements Listener {
                 sendHelp(sender);
                 break;
 
+            case "debug":
+                return handleDebugCommand(sender, args);
+
             default:
                 sender.sendMessage(getMessage("unknown-command"));
                 break;
         }
+        return true;
+    }
+
+    private boolean handleDebugCommand(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(getMessage("players-only"));
+            return true;
+        }
+
+        Player player = (Player) sender;
+
+        player.sendMessage("§6=== Group Debug ===");
+        player.sendMessage("§7OP status: §e" + player.isOp());
+        player.sendMessage("§7Username: §e" + player.getName());
+
+        // Проверяем основные групповые пермишены
+        String[] testGroups = {"group.owner", "group.admin", "group.moderator", "group.vip",
+                "group.builder", "group.premium", "group.donator"};
+
+        player.sendMessage("§7=== LuckPerms Permissions ===");
+        for (String groupPerm : testGroups) {
+            if (player.hasPermission(groupPerm)) {
+                player.sendMessage("§a✓ " + groupPerm);
+            } else {
+                player.sendMessage("§7✗ " + groupPerm);
+            }
+        }
+
+        // Определяем группу через наш метод
+        String detectedGroup = getPlayerGroup(player);
+        player.sendMessage("§7=== Detected Group ===");
+        player.sendMessage("§6Group: §e" + (detectedGroup != null ? detectedGroup : "none"));
+
+        // Показываем какой формат будет использован
+        if (detectedGroup != null && config.isConfigurationSection("group-formats")) {
+            String groupFormat = config.getString("group-formats." + detectedGroup);
+            player.sendMessage("§7Format: §f" + (groupFormat != null ? groupFormat : "default"));
+        }
+
         return true;
     }
 
@@ -543,30 +561,42 @@ public class GChat extends JavaPlugin implements Listener {
         // Отмена стандартного сообщения
         event.setCancelled(true);
 
-        // Обработка цветов и градиентов в сообщении (с проверкой прав)
+        // Логирование чистого оригинального сообщения ДО обработки
+        if (config.getBoolean("log-to-console", false) && config.getBoolean("log-original-message", true)) {
+            String cleanMessage = originalMessage.replace("&", "").replace("§", "");
+            String mode = isGlobalMessage ? "GLOBAL" : chatMode.toUpperCase();
+            Bukkit.getLogger().info("[" + mode + "] " + player.getName() + ": " + cleanMessage);
+        }
+
+        // Обработка цветов и градиентов в сообщении (ПОСЛЕ логирования)
         String processedMessage = processMessageColors(player, originalMessage);
         processedMessage = processMessageGradients(player, processedMessage);
 
-        getLogger().info("Original message: " + originalMessage);
-        getLogger().info("Processed message: " + processedMessage);
-
-        // Форматирование сообщения (передаем уже обработанное сообщение)
+        // Форматирование сообщения
         String formattedMessage = formatMessage(player, processedMessage, chatMode);
 
-        // Отправка сообщения ТОЛЬКО ОДИН РАЗ
+        // Отправка сообщения
         if (chatMode.equals("local") && !isGlobalMessage) {
             sendLocalMessage(player, formattedMessage);
         } else {
             sendGlobalMessage(formattedMessage);
         }
-
-        // Логирование в консоль
-        if (config.getBoolean("log-to-console", false)) {
-            getLogger().info("Final output: " + formattedMessage.replace("§", "&"));
-        }
     }
 
+    private String stripColorCodes(String text) {
+        if (text == null) return "";
 
+        // Удаляем все цветовые коды Minecraft (§a, §b, §1, etc.)
+        text = text.replaceAll("§[0-9a-fk-or]", "");
+
+        // Удаляем HEX цветовые коды (§x§f§f§f§f§5§5)
+        text = text.replaceAll("§x(§[0-9a-f]){6}", "");
+
+        // Удаляем оставшиеся § символы
+        text = text.replace("§", "");
+
+        return text.trim();
+    }
 
     private void sendHelp(CommandSender sender) {
         if (messagesConfig.contains("help")) {

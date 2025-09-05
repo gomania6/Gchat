@@ -30,6 +30,7 @@ enabled: true
 
 # Log formatted messages to console
 log-to-console: false
+log-original-message: true
 
 # Reload command cooldown (in seconds)
 reload-cooldown: 5
