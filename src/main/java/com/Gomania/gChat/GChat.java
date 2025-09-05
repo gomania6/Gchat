@@ -98,44 +98,7 @@ public class GChat extends JavaPlugin implements Listener {
         // Обновляем статус PlaceholderAPI после перезагрузки
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
     }
-
-    @EventHandler
-    public void onAsyncPlayerChat(AsyncPlayerChatEvent event) {
-        if (!config.getBoolean("enabled", true)) {
-            return;
-        }
-
-        Player player = event.getPlayer();
-        String message = event.getMessage();
-        String chatMode = playerChatModes.getOrDefault(player.getUniqueId(),
-                config.getString("default-chat-mode", "local"));
-
-        // Проверка на глобальное сообщение с !
-        boolean isGlobalMessage = message.startsWith("!");
-        if (isGlobalMessage) {
-            message = message.substring(1).trim();
-            chatMode = "global";
-        }
-
-        // Отмена стандартного сообщения
-        event.setCancelled(true);
-
-        // Форматирование сообщения
-        String formattedMessage = formatMessage(player, message, chatMode);
-
-        // Отправка сообщения
-        if (chatMode.equals("local") && !isGlobalMessage) {
-            sendLocalMessage(player, formattedMessage);
-        } else {
-            sendGlobalMessage(formattedMessage);
-        }
-
-        // Логирование в консоль
-        if (config.getBoolean("log-to-console", false)) {
-            getLogger().info(formattedMessage.replace("§", "&"));
-        }
-    }
-
+    
     private String formatMessage(Player player, String message, String chatMode) {
         String baseFormat;
 
@@ -151,7 +114,7 @@ public class GChat extends JavaPlugin implements Listener {
 
         getLogger().info("Player " + player.getName() + " (OP: " + player.isOp() + ") detected group: " + playerGroup);
 
-        // Сначала проверяем группу
+        // Сначала проверяем группу из LuckPerms
         if (playerGroup != null && config.isConfigurationSection("group-formats")) {
             groupFormat = config.getString("group-formats." + playerGroup);
             getLogger().info("Group format for " + playerGroup + ": " + groupFormat);
@@ -171,14 +134,29 @@ public class GChat extends JavaPlugin implements Listener {
         String finalFormat = (groupFormat != null) ? groupFormat :
                 config.getString("default-format", "%player_name% &7» %message%");
 
-        getLogger().info("Final format for " + player.getName() + ": " + finalFormat);
+        getLogger().info("Raw format for " + player.getName() + ": " + finalFormat);
 
-        // Обработка формата
+        // ЗАМЕНЯЕМ ПЛЕЙСХОЛДЕРЫ В ПРАВИЛЬНОМ ПОРЯДКЕ!
+
+        // 1. Сначала заменяем %gchat_format% на базовый формат
         finalFormat = finalFormat.replace("%gchat_format%", baseFormat != null ? baseFormat : "");
+
+        // 2. Затем заменяем другие плейсхолдеры (player_name, displayname и т.д.)
         finalFormat = replacePlaceholders(player, finalFormat);
-        finalFormat = finalFormat.replace("%message%", applyGradients(message));
+
+        // 3. Заменяем %message% на обработанное сообщение (уже с градиентами и цветами)
+        finalFormat = finalFormat.replace("%message%", message);
+
+        // 4. Применяем цветовые коды
         finalFormat = finalFormat.replace("&", "§");
+
+        // 5. Применяем градиенты ко всему формату
         finalFormat = applyGradients(finalFormat);
+
+        // 6. Добавляем reset в конце чтобы избежать проблем с цветами
+        finalFormat += "§r";
+
+        getLogger().info("Final formatted message for " + player.getName() + ": " + finalFormat.replace("§", "&"));
 
         return finalFormat;
     }
@@ -337,6 +315,11 @@ public class GChat extends JavaPlugin implements Listener {
                 // Конвертируем цвет в Minecraft HEX формат
                 gradient.append(colorToMinecraftHex(currentColor));
                 gradient.append(text.charAt(i));
+
+                // Сбрасываем цвет после каждого символа чтобы избежать наложения
+                if (i < length - 1) {
+                    gradient.append("§r");
+                }
             }
 
             return gradient.toString();
@@ -380,13 +363,19 @@ public class GChat extends JavaPlugin implements Listener {
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (player.getWorld().equals(sender.getWorld()) &&
                     player.getLocation().distanceSquared(sender.getLocation()) <= radiusSquared) {
-                player.sendMessage(formattedMessage);
-                recipients++;
+                // НЕ отправляем сообщение отправителю здесь - он получит его отдельно
+                if (!player.getUniqueId().equals(sender.getUniqueId())) {
+                    player.sendMessage(formattedMessage);
+                    recipients++;
+                }
             }
         }
 
-        // Если никого нет в радиусе и включено уведомление о тишине
-        if (recipients <= 1 && config.getBoolean("local-chat.show-silent-message", true)) {
+        // Отправляем сообщение отправителю ОДИН раз
+        sender.sendMessage(formattedMessage);
+
+        // Если никого нет в радиусе (кроме самого отправителя), отправляем сообщение о тишине
+        if (recipients == 0 && config.getBoolean("local-chat.show-silent-message", true)) {
             sender.sendMessage(getMessage("local-chat-silent"));
         }
     }
@@ -396,6 +385,7 @@ public class GChat extends JavaPlugin implements Listener {
             return;
         }
 
+        // Отправляем сообщение всем игрокам ОДИН раз
         for (Player player : Bukkit.getOnlinePlayers()) {
             player.sendMessage(formattedMessage);
         }
@@ -462,52 +452,121 @@ public class GChat extends JavaPlugin implements Listener {
     }
 
     private boolean handleGlobalCommand(CommandSender sender, String[] args) {
+        // НОВАЯ РЕАЛИЗАЦИЯ
         if (!(sender instanceof Player)) {
             sender.sendMessage(getMessage("players-only"));
             return true;
         }
 
         Player player = (Player) sender;
-        if (args.length == 0) {
-            playerChatModes.put(player.getUniqueId(), "global");
-            player.sendMessage(getMessage("chat-mode-global"));
-            return true;
-        }
-
-        // Если есть аргументы, отправляем глобальное сообщение
-        String message = String.join(" ", args);
-        String formattedMessage = formatMessage(player, message, "global");
-        sendGlobalMessage(formattedMessage);
-
-        if (config.getBoolean("log-to-console", false)) {
-            getLogger().info(formattedMessage.replace("§", "&"));
-        }
+        // ВСЕГДА только меняем режим, игнорируем аргументы
+        playerChatModes.put(player.getUniqueId(), "global");
+        player.sendMessage(getMessage("chat-mode-global"));
         return true;
     }
 
     private boolean handleLocalCommand(CommandSender sender, String[] args) {
+        // НОВАЯ РЕАЛИЗАЦИЯ
         if (!(sender instanceof Player)) {
             sender.sendMessage(getMessage("players-only"));
             return true;
         }
 
         Player player = (Player) sender;
-        if (args.length == 0) {
-            playerChatModes.put(player.getUniqueId(), "local");
-            player.sendMessage(getMessage("chat-mode-local"));
-            return true;
-        }
-
-        // Если есть аргументы, отправляем локальное сообщение
-        String message = String.join(" ", args);
-        String formattedMessage = formatMessage(player, message, "local");
-        sendLocalMessage(player, formattedMessage);
-
-        if (config.getBoolean("log-to-console", false)) {
-            getLogger().info(formattedMessage.replace("§", "&"));
-        }
+        // ВСЕГДА только меняем режим, игнорируем аргументы
+        playerChatModes.put(player.getUniqueId(), "local");
+        player.sendMessage(getMessage("chat-mode-local"));
         return true;
     }
+
+    private boolean canUseColors(Player player) {
+        return player.hasPermission("gchat.color") || player.hasPermission("gchat.*");
+    }
+
+    private boolean canUseGradients(Player player) {
+        return player.hasPermission("gchat.gradient") || player.hasPermission("gchat.*");
+    }
+
+    private String processMessageColors(Player player, String message) {
+        if (canUseColors(player)) {
+            // Разрешаем стандартные цветовые коды (&a, &b, и т.д.)
+            message = message.replace("&", "§");
+        } else {
+            // Убираем цветовые коды если нет прав
+            message = message.replace("&0", "").replace("&1", "").replace("&2", "")
+                    .replace("&3", "").replace("&4", "").replace("&5", "")
+                    .replace("&6", "").replace("&7", "").replace("&8", "")
+                    .replace("&9", "").replace("&a", "").replace("&b", "")
+                    .replace("&c", "").replace("&d", "").replace("&e", "")
+                    .replace("&f", "").replace("&k", "").replace("&l", "")
+                    .replace("&m", "").replace("&n", "").replace("&o", "")
+                    .replace("&r", "");
+        }
+        return message;
+    }
+
+    private String processMessageGradients(Player player, String message) {
+        if (canUseGradients(player)) {
+            // Разрешаем градиенты если есть права
+            message = applyGradients(message);
+        } else {
+            // Убираем градиенты если нет прав
+            message = removeGradients(message);
+        }
+        return message;
+    }
+
+    private String removeGradients(String text) {
+        // Удаляем все градиентные теги {#RRGGBB>} и {#RRGGBB<}
+        return text.replaceAll("\\{#[0-9A-Fa-f]{6}>\\}", "")
+                .replaceAll("\\{#[0-9A-Fa-f]{6}<\\}", "");
+    }
+
+    @EventHandler
+    public void onAsyncPlayerChatEvent(AsyncPlayerChatEvent event) {
+        if (!config.getBoolean("enabled", true)) {
+            return;
+        }
+
+        Player player = event.getPlayer();
+        String originalMessage = event.getMessage();
+        String chatMode = playerChatModes.getOrDefault(player.getUniqueId(),
+                config.getString("default-chat-mode", "local"));
+
+        // Проверка на глобальное сообщение с !
+        boolean isGlobalMessage = originalMessage.startsWith("!");
+        if (isGlobalMessage) {
+            originalMessage = originalMessage.substring(1).trim();
+            chatMode = "global";
+        }
+
+        // Отмена стандартного сообщения
+        event.setCancelled(true);
+
+        // Обработка цветов и градиентов в сообщении (с проверкой прав)
+        String processedMessage = processMessageColors(player, originalMessage);
+        processedMessage = processMessageGradients(player, processedMessage);
+
+        getLogger().info("Original message: " + originalMessage);
+        getLogger().info("Processed message: " + processedMessage);
+
+        // Форматирование сообщения (передаем уже обработанное сообщение)
+        String formattedMessage = formatMessage(player, processedMessage, chatMode);
+
+        // Отправка сообщения ТОЛЬКО ОДИН РАЗ
+        if (chatMode.equals("local") && !isGlobalMessage) {
+            sendLocalMessage(player, formattedMessage);
+        } else {
+            sendGlobalMessage(formattedMessage);
+        }
+
+        // Логирование в консоль
+        if (config.getBoolean("log-to-console", false)) {
+            getLogger().info("Final output: " + formattedMessage.replace("§", "&"));
+        }
+    }
+
+
 
     private void sendHelp(CommandSender sender) {
         if (messagesConfig.contains("help")) {

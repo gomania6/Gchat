@@ -10,15 +10,27 @@ commands:
     usage: /gchat [reload|help]
     aliases: [gch]
   g:
-    description: Switch to global chat or send global message
-    usage: /g [message]
+    description: Switch to global chat mode
+    usage: /g
     aliases: [global]
   l:
-    description: Switch to local chat or send local message
-    usage: /l [message]
+    description: Switch to local chat mode
+    usage: /l
     aliases: [local]
 
 permissions:
   gchat.reload:
     description: Allows to reload gChat configuration
+    default: op
+
+  gchat.color:
+    description: Allows to use color codes (&a, &b, etc.) in chat
+    default: false
+
+  gchat.gradient:
+    description: Allows to use gradients ({#RRGGBB>}text{#RRGGBB<}) in chat
+    default: false
+
+  gchat.*:
+    description: All gChat permissions (including color and gradient)
     default: op
