@@ -2,16 +2,9 @@
 # gChat Configuration
 # ==============================
 
-# Включить/выключить плагин
 enabled: true
-
-# Выбор языка сообщений
-language: "ru"
-
-# Режим чата по умолчанию (local / global)
+language: ru
 default-chat-mode: local
-
-# Логировать ли сообщения в консоль
 log-to-console: true
 
 # ==============================
@@ -60,6 +53,8 @@ message-cooldown:
 # Кулдаун на /gchat reload
 reload-cooldown: 5
 
+allow-colors: true
+allow-gradients: true
 # ==============================
 # Фильтр мата
 # ==============================
@@ -70,6 +65,21 @@ filter:
     - дурак
     - идиот
     - плохое_слово
+
+# ==============================
+# Фильтр команд
+# ==============================
+blocked-commands:
+  - "/op"
+  - "/gamemode"
+  - "/ban"
+  - "/kick"
+
+# ==============================
+# Сообщения входа/выхода
+# ==============================
+join-message: "&8[&a+&8] &f%player_name%"
+quit-message: "&8[&c-&8] &f%player_name%"
 
 # ==============================
 # Помощь (/gchat help)

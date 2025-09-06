@@ -9,7 +9,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.*;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -26,14 +26,22 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     private FileConfiguration config;
     private FileConfiguration messagesConfig;
     private File messagesFile;
+
     private final Map<UUID, String> playerChatModes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> reloadCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> messageCooldowns = new ConcurrentHashMap<>();
+
     private final Pattern gradientPattern = Pattern.compile("\\{#([0-9A-Fa-f]{6})>\\}(.*?)\\{#([0-9A-Fa-f]{6})<\\}");
     private final Pattern colorPattern = Pattern.compile("&[0-9a-fk-or]", Pattern.CASE_INSENSITIVE);
+
     private boolean hasPlaceholderAPI = false;
     private boolean hasLuckPerms = false;
     private Object luckPermsAPI = null;
+
+    // Новые поля
+    private List<String> blockedCommands = new ArrayList<>();
+    private String joinMessage;
+    private String quitMessage;
 
     @Override
     public void onEnable() {
@@ -48,12 +56,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
         hasLuckPerms = Bukkit.getPluginManager().getPlugin("LuckPerms") != null;
 
-        if (hasPlaceholderAPI) {
-            getLogger().info("PlaceholderAPI found! Placeholders will be supported.");
-        } else {
-            getLogger().info("PlaceholderAPI not found! Using basic placeholders only.");
-        }
-
+        if (hasPlaceholderAPI) getLogger().info("PlaceholderAPI found! Placeholders enabled.");
         if (hasLuckPerms) {
             getLogger().info("LuckPerms found! Group support enabled.");
             try {
@@ -63,8 +66,6 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
                 getLogger().warning("Failed to initialize LuckPerms API: " + e.getMessage());
                 hasLuckPerms = false;
             }
-        } else {
-            getLogger().info("LuckPerms not found! Using permission-based groups.");
         }
 
         getLogger().info("gChat plugin enabled!");
@@ -72,7 +73,6 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
     @Override
     public void onDisable() {
-        // Очистка данных
         playerChatModes.clear();
         reloadCooldowns.clear();
         messageCooldowns.clear();
@@ -85,15 +85,12 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
         if (!messagesFile.exists()) {
             try (InputStream in = getResource("messages_" + language + ".yml")) {
-                if (in != null) {
-                    Files.copy(in, messagesFile.toPath());
-                }
+                if (in != null) Files.copy(in, messagesFile.toPath());
             } catch (Exception e) {
                 getLogger().warning("Failed to create messages file: " + e.getMessage());
             }
         }
         reloadMessages();
-
     }
 
     public void reloadMessages() {
@@ -102,13 +99,10 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
     public String getMessage(String path) {
         String message = messagesConfig.getString(path);
-        if (message == null) {
-            return "§cMessage not found: " + path;
-        }
+        if (message == null) return "§cMessage not found: " + path;
 
         String prefix = messagesConfig.getString("prefix", "&8[&6gChat&8]");
         message = message.replace("{prefix}", prefix);
-
         return message.replace("&", "§");
     }
 
@@ -117,7 +111,11 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         config = getConfig();
         reloadMessages();
 
-        // Проверка зависимостей
+        // Новые настройки
+        blockedCommands = config.getStringList("blocked-commands");
+        joinMessage = config.getString("join-message", "");
+        quitMessage = config.getString("quit-message", "");
+
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
         hasLuckPerms = Bukkit.getPluginManager().getPlugin("LuckPerms") != null;
 
@@ -132,14 +130,11 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
     }
 
+    // ================== Чат ==================
     private String formatMessage(Player player, String message, String chatMode) {
-        String baseFormat;
-
-        if (chatMode.equals("local")) {
-            baseFormat = config.getString("local-chat.format", "&8[Локально]");
-        } else {
-            baseFormat = config.getString("global-chat.format", "&8[Глобально]");
-        }
+        String baseFormat = chatMode.equals("local")
+                ? config.getString("local-chat.format", "&8[Локально]")
+                : config.getString("global-chat.format", "&8[Глобально]");
 
         String playerGroup = getPlayerGroup(player);
         String groupFormat = null;
@@ -161,9 +156,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
                 ? groupFormat
                 : config.getString("default-format", "%player_name% &7» %message%");
 
-        if (finalFormat == null || finalFormat.isEmpty()) {
-            finalFormat = "%player_name% » %message%";
-        }
+        if (finalFormat == null || finalFormat.isEmpty()) finalFormat = "%player_name% » %message%";
 
         finalFormat = finalFormat.replace("%gchat_format%", baseFormat != null ? baseFormat : "");
         finalFormat = replacePlaceholders(player, finalFormat);
@@ -177,41 +170,30 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
     private String getPlayerGroup(Player player) {
         if (!hasLuckPerms) {
-            // Fallback к permission-based группам
-            String[] testGroups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
-            for (String group : testGroups) {
-                if (player.hasPermission("gchat.group." + group)) {
-                    return group.toLowerCase();
-                }
+            String[] groups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
+            for (String group : groups) {
+                if (player.hasPermission("gchat.group." + group)) return group.toLowerCase();
             }
             return null;
         }
 
         try {
             Class<?> apiClass = luckPermsAPI.getClass();
-            Object user = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
-            user = user.getClass().getMethod("getUser", UUID.class).invoke(user, player.getUniqueId());
+            Object userManager = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
+            Object user = userManager.getClass().getMethod("getUser", UUID.class).invoke(userManager, player.getUniqueId());
 
-            if (user == null) {
-                return null;
-            }
+            if (user == null) return null;
 
-            // Получаем основную группу
             String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
-            if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) {
-                return primaryGroup.toLowerCase();
-            }
+            if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) return primaryGroup.toLowerCase();
 
-            // Ищем группы в нодах
             Object nodes = user.getClass().getMethod("getNodes").invoke(user);
             if (nodes instanceof Iterable) {
                 for (Object node : (Iterable<?>) nodes) {
                     String nodeClass = node.getClass().getSimpleName();
                     if (nodeClass.equals("InheritanceNode")) {
                         String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
-                        if (groupName != null && !groupName.equalsIgnoreCase("default")) {
-                            return groupName.toLowerCase();
-                        }
+                        if (groupName != null && !groupName.equalsIgnoreCase("default")) return groupName.toLowerCase();
                     }
                 }
             }
@@ -232,9 +214,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
                 Class<?> papiClass = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
                 Object result = papiClass.getMethod("setPlaceholders", Player.class, String.class)
                         .invoke(null, player, text);
-                if (result instanceof String) {
-                    text = (String) result;
-                }
+                if (result instanceof String) text = (String) result;
             } catch (Exception e) {
                 getLogger().warning("Failed to set PlaceholderAPI placeholders: " + e.getMessage());
             }
@@ -287,24 +267,17 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
     }
 
-
     private String colorToMinecraftHex(java.awt.Color color) {
         String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
         StringBuilder minecraftHex = new StringBuilder("§x");
-        for (char c : hex.substring(1).toCharArray()) {
-            minecraftHex.append("§").append(c);
-        }
+        for (char c : hex.substring(1).toCharArray()) minecraftHex.append("§").append(c);
         return minecraftHex.toString();
     }
 
     private java.awt.Color interpolateColor(java.awt.Color start, java.awt.Color end, float ratio) {
-        int red = (int) (start.getRed() + ratio * (end.getRed() - start.getRed()));
-        int green = (int) (start.getGreen() + ratio * (end.getGreen() - start.getGreen()));
-        int blue = (int) (start.getBlue() + ratio * (end.getBlue() - start.getBlue()));
-
-        red = Math.max(0, Math.min(255, red));
-        green = Math.max(0, Math.min(255, green));
-        blue = Math.max(0, Math.min(255, blue));
+        int red = Math.max(0, Math.min(255, (int) (start.getRed() + ratio * (end.getRed() - start.getRed()))));
+        int green = Math.max(0, Math.min(255, (int) (start.getGreen() + ratio * (end.getGreen() - start.getGreen()))));
+        int blue = Math.max(0, Math.min(255, (int) (start.getBlue() + ratio * (end.getBlue() - start.getBlue()))));
 
         return new java.awt.Color(red, green, blue);
     }
@@ -323,9 +296,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
             if (player.getWorld().equals(sender.getWorld()) &&
                     player.getLocation().distanceSquared(sender.getLocation()) <= radiusSquared) {
                 player.sendMessage(formattedMessage);
-                if (!player.getUniqueId().equals(sender.getUniqueId())) {
-                    recipients++;
-                }
+                if (!player.getUniqueId().equals(sender.getUniqueId())) recipients++;
             }
         }
 
@@ -335,45 +306,28 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private void sendGlobalMessage(String formattedMessage) {
-        if (!config.getBoolean("global-chat.enabled", true)) {
-            return;
-        }
+        if (!config.getBoolean("global-chat.enabled", true)) return;
 
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            player.sendMessage(formattedMessage);
-        }
+        for (Player player : Bukkit.getOnlinePlayers()) player.sendMessage(formattedMessage);
     }
 
+    // ================== Команды ==================
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (command.getName().equalsIgnoreCase("gchat")) {
-            return handleGChatCommand(sender, args);
-        }
-
-        if (command.getName().equalsIgnoreCase("g")) {
-            return handleGlobalCommand(sender, args);
-        }
-
-        if (command.getName().equalsIgnoreCase("l")) {
-            return handleLocalCommand(sender, args);
-        }
-
+        if (command.getName().equalsIgnoreCase("gchat")) return handleGChatCommand(sender, args);
+        if (command.getName().equalsIgnoreCase("g")) return handleGlobalCommand(sender, args);
+        if (command.getName().equalsIgnoreCase("l")) return handleLocalCommand(sender, args);
         return false;
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (command.getName().equalsIgnoreCase("gchat")) {
-            if (args.length == 1) {
-                List<String> completions = new ArrayList<>();
-                if (sender.hasPermission("gchat.reload")) completions.add("reload");
-                if (sender.hasPermission("gchat.debug")) completions.add("debug");
-                completions.add("help");
-
-                return completions.stream()
-                        .filter(c -> c.startsWith(args[0].toLowerCase()))
-                        .collect(Collectors.toList());
-            }
+        if (command.getName().equalsIgnoreCase("gchat") && args.length == 1) {
+            List<String> completions = new ArrayList<>();
+            if (sender.hasPermission("gchat.reload")) completions.add("reload");
+            if (sender.hasPermission("gchat.debug")) completions.add("debug");
+            completions.add("help");
+            return completions.stream().filter(c -> c.startsWith(args[0].toLowerCase())).collect(Collectors.toList());
         }
         return Collections.emptyList();
     }
@@ -386,26 +340,19 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
         switch (args[0].toLowerCase()) {
             case "reload":
-                if (!sender.hasPermission("gchat.reload")) {
-                    sender.sendMessage(getMessage("no-permission"));
-                    return true;
-                }
-
+                if (!sender.hasPermission("gchat.reload")) { sender.sendMessage(getMessage("no-permission")); return true; }
                 if (sender instanceof Player) {
                     Player player = (Player) sender;
                     long currentTime = System.currentTimeMillis();
                     long lastReload = reloadCooldowns.getOrDefault(player.getUniqueId(), 0L);
                     int cooldown = config.getInt("reload-cooldown", 5) * 1000;
-
                     if (currentTime - lastReload < cooldown) {
                         long remaining = (cooldown - (currentTime - lastReload)) / 1000;
                         sender.sendMessage(getMessage("reload-cooldown").replace("{time}", String.valueOf(remaining)));
                         return true;
                     }
-
                     reloadCooldowns.put(player.getUniqueId(), currentTime);
                 }
-
                 reloadConfigValues();
                 sender.sendMessage(getMessage("config-reloaded"));
                 break;
@@ -415,10 +362,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
                 break;
 
             case "debug":
-                if (!sender.hasPermission("gchat.debug")) {
-                    sender.sendMessage(getMessage("no-permission"));
-                    return true;
-                }
+                if (!sender.hasPermission("gchat.debug")) { sender.sendMessage(getMessage("no-permission")); return true; }
                 return handleDebugCommand(sender, args);
 
             default:
@@ -429,11 +373,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private boolean handleDebugCommand(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(getMessage("players-only"));
-            return true;
-        }
-
+        if (!(sender instanceof Player)) { sender.sendMessage(getMessage("players-only")); return true; }
         Player player = (Player) sender;
 
         player.sendMessage("§6=== Group Debug ===");
@@ -441,15 +381,10 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         player.sendMessage("§7Username: §e" + player.getName());
 
         String[] testGroups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
-
         player.sendMessage("§7=== Permissions ===");
         for (String group : testGroups) {
             String perm = "gchat.group." + group;
-            if (player.hasPermission(perm)) {
-                player.sendMessage("§a✓ " + perm);
-            } else {
-                player.sendMessage("§7✗ " + perm);
-            }
+            player.sendMessage(player.hasPermission(perm) ? "§a✓ " + perm : "§7✗ " + perm);
         }
 
         String detectedGroup = getPlayerGroup(player);
@@ -468,12 +403,9 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
 
-        if (args.length > 0) {
-            processChatMessage(player, String.join(" ", args), "global");
-        } else {
-            playerChatModes.put(player.getUniqueId(), "global");
-            player.sendMessage(getMessage("chat-mode-global"));
-        }
+        if (args.length > 0) processChatMessage(player, String.join(" ", args), "global");
+        else { playerChatModes.put(player.getUniqueId(), "global"); player.sendMessage(getMessage("chat-mode-global")); }
+
         return true;
     }
 
@@ -481,38 +413,23 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
 
-        if (args.length > 0) {
-            processChatMessage(player, String.join(" ", args), "local");
-        } else {
-            playerChatModes.put(player.getUniqueId(), "local");
-            player.sendMessage(getMessage("chat-mode-local"));
-        }
+        if (args.length > 0) processChatMessage(player, String.join(" ", args), "local");
+        else { playerChatModes.put(player.getUniqueId(), "local"); player.sendMessage(getMessage("chat-mode-local")); }
+
         return true;
     }
 
-    private boolean canUseColors(Player player) {
-        return player.hasPermission("gchat.color");
-    }
-
-    private boolean canUseGradients(Player player) {
-        return player.hasPermission("gchat.gradient");
-    }
+    private boolean canUseColors(Player player) { return player.hasPermission("gchat.color"); }
+    private boolean canUseGradients(Player player) { return player.hasPermission("gchat.gradient"); }
 
     private String processMessageColors(Player player, String message) {
-        if (canUseColors(player)) {
-            return message.replace("&", "§");
-        } else {
-            // Более безопасное удаление цветовых кодов
-            return colorPattern.matcher(message).replaceAll("");
-        }
+        if (canUseColors(player)) return message.replace("&", "§");
+        return colorPattern.matcher(message).replaceAll("");
     }
 
     private String processMessageGradients(Player player, String message) {
-        if (canUseGradients(player)) {
-            return applyGradients(message);
-        } else {
-            return removeGradients(message);
-        }
+        if (canUseGradients(player)) return applyGradients(message);
+        return removeGradients(message);
     }
 
     private String removeGradients(String text) {
@@ -521,13 +438,8 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private boolean checkCooldown(Player player) {
-        if (!config.getBoolean("message-cooldown.enabled", false)) {
-            return true;
-        }
-
-        if (player.hasPermission("gchat.bypass.cooldown")) {
-            return true;
-        }
+        if (!config.getBoolean("message-cooldown.enabled", false)) return true;
+        if (player.hasPermission("gchat.bypass.cooldown")) return true;
 
         long currentTime = System.currentTimeMillis();
         long lastMessage = messageCooldowns.getOrDefault(player.getUniqueId(), 0L);
@@ -553,9 +465,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private String filterBadWords(Player player, String message) {
-        if (!config.getBoolean("filter.enabled", false) || player.hasPermission("gchat.bypass.filter")) {
-            return message;
-        }
+        if (!config.getBoolean("filter.enabled", false) || player.hasPermission("gchat.bypass.filter")) return message;
 
         List<String> badWords = config.getStringList("filter.words");
         String resultMessage = message;
@@ -564,7 +474,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
             if (resultMessage.toLowerCase().contains(word.toLowerCase())) {
                 if (config.getBoolean("filter.block-message", true)) {
                     player.sendMessage(getMessage("message-blocked"));
-                    return null; // блокируем сообщение
+                    return null;
                 } else {
                     String replacement = String.join("", Collections.nCopies(word.length(), "*"));
                     resultMessage = resultMessage.replaceAll("(?i)" + Pattern.quote(word), replacement);
@@ -576,54 +486,26 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private boolean hasChatPermission(Player player, String chatType) {
-        // OP или игрок с bypass всегда могут писать
         if (player.hasPermission("gchat.bypass")) return true;
-
-        // Все игроки имеют базовый доступ "из коробки"
-        if (chatType.equalsIgnoreCase("global") || chatType.equalsIgnoreCase("local")) return true;
-
-        return true; // на всякий случай
+        return chatType.equalsIgnoreCase("global") || chatType.equalsIgnoreCase("local");
     }
 
-
     private void processChatMessage(Player player, String originalMessage, String chatMode) {
-        // Проверка разрешения на использование чата
-        if (!hasChatPermission(player, chatMode)) {
-            return;
-        }
+        if (!hasChatPermission(player, chatMode)) return;
+        if (!checkCooldown(player)) return;
+        if (!checkMessageLength(player, originalMessage)) return;
 
-        // Проверка кулдауна
-        if (!checkCooldown(player)) {
-            return;
-        }
-
-        // Проверка длины сообщения
-        if (!checkMessageLength(player, originalMessage)) {
-            return;
-        }
-
-        // Фильтрация плохих слов
         String filteredMessage = filterBadWords(player, originalMessage);
-        if (filteredMessage == null) {
-            return; // сообщение заблокировано
-        }
+        if (filteredMessage == null) return;
 
-
-        // Обработка цветов и градиентов
         String processedMessage = processMessageColors(player, filteredMessage);
         processedMessage = processMessageGradients(player, processedMessage);
 
-        // Форматирование сообщения
         String formattedMessage = formatMessage(player, processedMessage, chatMode);
 
-        // Отправка сообщения
-        if (chatMode.equals("local")) {
-            sendLocalMessage(player, formattedMessage);
-        } else {
-            sendGlobalMessage(formattedMessage);
-        }
+        if (chatMode.equals("local")) sendLocalMessage(player, formattedMessage);
+        else sendGlobalMessage(formattedMessage);
 
-        // Логирование в консоль
         if (config.getBoolean("log-to-console", false)) {
             String cleanMessage = originalMessage.replace("&", "").replace("§", "");
             String mode = chatMode.toUpperCase();
@@ -631,6 +513,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
     }
 
+    // ================== События ==================
     @EventHandler
     public void onAsyncPlayerChatEvent(AsyncPlayerChatEvent event) {
         if (!config.getBoolean("enabled", true)) return;
@@ -647,6 +530,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
             chatMode = chatMode.toLowerCase();
         }
 
+        // создаём финальные копии для лямбды
         final Player finalPlayer = player;
         final String finalMessage = originalMessage;
         final String finalChatMode = chatMode;
@@ -655,11 +539,38 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         Bukkit.getScheduler().runTask(this, () -> processChatMessage(finalPlayer, finalMessage, finalChatMode));
     }
 
+    @EventHandler
+    public void onPlayerCommand(PlayerCommandPreprocessEvent event) {
+        String message = event.getMessage().toLowerCase();
+        Player player = event.getPlayer();
+
+        for (String cmd : blockedCommands) {
+            if (message.startsWith(cmd.toLowerCase())) {
+                player.sendMessage(getMessage("no-permission"));
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        if (joinMessage != null && !joinMessage.isEmpty())
+            event.setJoinMessage(joinMessage.replace("%player_name%", player.getName()).replace("&", "§"));
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        Player player = event.getPlayer();
+        if (quitMessage != null && !quitMessage.isEmpty())
+            event.setQuitMessage(quitMessage.replace("%player_name%", player.getName()).replace("&", "§"));
+    }
+
     private void sendHelp(CommandSender sender) {
         if (messagesConfig.contains("help")) {
-            for (String line : messagesConfig.getStringList("help")) {
+            for (String line : messagesConfig.getStringList("help"))
                 sender.sendMessage(line.replace("&", "§"));
-            }
         } else {
             sender.sendMessage("§6§l=== gChat Help ===");
             sender.sendMessage("§e/gchat reload §7- Перезагрузить конфигурацию");
@@ -672,12 +583,8 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
             sender.sendMessage("§e!<сообщение> §7- Отправить разовое глобальное сообщение");
             sender.sendMessage("§6Градиенты: §7{#RRGGBB>}Text{#RRGGBB<}");
 
-            // Информация о разрешениях
-            if (sender.hasPermission("gchat.use")) {
-                sender.sendMessage("§a✓ Вы имеете доступ к чату");
-            } else {
-                sender.sendMessage("§c✗ У вас нет доступа к чату");
-            }
+            if (sender.hasPermission("gchat.use")) sender.sendMessage("§a✓ Вы имеете доступ к чату");
+            else sender.sendMessage("§c✗ У вас нет доступа к чату");
         }
     }
 }
