@@ -3,6 +3,7 @@ package com.Gomania.gChat;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -14,39 +15,56 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.File;
 import java.io.InputStream;
 import java.nio.file.Files;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
-public class GChat extends JavaPlugin implements Listener {
+public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
     private FileConfiguration config;
     private FileConfiguration messagesConfig;
     private File messagesFile;
-    private final Map<UUID, String> playerChatModes = new HashMap<>();
-    private final Map<UUID, Long> reloadCooldowns = new HashMap<>();
+    private final Map<UUID, String> playerChatModes = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> reloadCooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> messageCooldowns = new ConcurrentHashMap<>();
     private final Pattern gradientPattern = Pattern.compile("\\{#([0-9A-Fa-f]{6})>\\}(.*?)\\{#([0-9A-Fa-f]{6})<\\}");
+    private final Pattern colorPattern = Pattern.compile("&[0-9a-fk-or]", Pattern.CASE_INSENSITIVE);
     private boolean hasPlaceholderAPI = false;
+    private boolean hasLuckPerms = false;
+    private Object luckPermsAPI = null;
 
     @Override
     public void onEnable() {
-        // Создаем конфиги
         saveDefaultConfig();
         config = getConfig();
         setupMessages();
         reloadConfigValues();
 
-        // Регистрируем события
         getServer().getPluginManager().registerEvents(this, this);
 
-        // Проверяем наличие PlaceholderAPI
+        // Проверка зависимостей
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+        hasLuckPerms = Bukkit.getPluginManager().getPlugin("LuckPerms") != null;
+
         if (hasPlaceholderAPI) {
             getLogger().info("PlaceholderAPI found! Placeholders will be supported.");
         } else {
-            getLogger().warning("PlaceholderAPI not found! Basic placeholders only.");
+            getLogger().info("PlaceholderAPI not found! Using basic placeholders only.");
+        }
+
+        if (hasLuckPerms) {
+            getLogger().info("LuckPerms found! Group support enabled.");
+            try {
+                Class<?> luckPermsClass = Class.forName("net.luckperms.api.LuckPerms");
+                luckPermsAPI = Bukkit.getServicesManager().getRegistration(luckPermsClass).getProvider();
+            } catch (Exception e) {
+                getLogger().warning("Failed to initialize LuckPerms API: " + e.getMessage());
+                hasLuckPerms = false;
+            }
+        } else {
+            getLogger().info("LuckPerms not found! Using permission-based groups.");
         }
 
         getLogger().info("gChat plugin enabled!");
@@ -54,23 +72,28 @@ public class GChat extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        // Очистка данных
+        playerChatModes.clear();
+        reloadCooldowns.clear();
+        messageCooldowns.clear();
         getLogger().info("gChat plugin disabled!");
     }
 
     private void setupMessages() {
-        messagesFile = new File(getDataFolder(), "messages.yml");
+        String language = config.getString("language", "ru").toLowerCase();
+        messagesFile = new File(getDataFolder(), "messages_" + language + ".yml");
+
         if (!messagesFile.exists()) {
-            try (InputStream in = getResource("messages.yml")) {
+            try (InputStream in = getResource("messages_" + language + ".yml")) {
                 if (in != null) {
                     Files.copy(in, messagesFile.toPath());
-                } else {
-                    getLogger().warning("Could not find messages.yml in resources!");
                 }
             } catch (Exception e) {
-                getLogger().warning("Failed to create messages.yml: " + e.getMessage());
+                getLogger().warning("Failed to create messages file: " + e.getMessage());
             }
         }
         reloadMessages();
+
     }
 
     public void reloadMessages() {
@@ -83,11 +106,9 @@ public class GChat extends JavaPlugin implements Listener {
             return "§cMessage not found: " + path;
         }
 
-        // Заменяем {prefix}
         String prefix = messagesConfig.getString("prefix", "&8[&6gChat&8]");
         message = message.replace("{prefix}", prefix);
 
-        // Применяем все цветовые коды
         return message.replace("&", "§");
     }
 
@@ -95,8 +116,20 @@ public class GChat extends JavaPlugin implements Listener {
         reloadConfig();
         config = getConfig();
         reloadMessages();
-        // Обновляем статус PlaceholderAPI после перезагрузки
+
+        // Проверка зависимостей
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+        hasLuckPerms = Bukkit.getPluginManager().getPlugin("LuckPerms") != null;
+
+        if (hasLuckPerms) {
+            try {
+                Class<?> luckPermsClass = Class.forName("net.luckperms.api.LuckPerms");
+                luckPermsAPI = Bukkit.getServicesManager().getRegistration(luckPermsClass).getProvider();
+            } catch (Exception e) {
+                getLogger().warning("Failed to initialize LuckPerms API: " + e.getMessage());
+                hasLuckPerms = false;
+            }
+        }
     }
 
     private String formatMessage(Player player, String message, String chatMode) {
@@ -108,16 +141,13 @@ public class GChat extends JavaPlugin implements Listener {
             baseFormat = config.getString("global-chat.format", "&8[Глобально]");
         }
 
-        // Определяем группу через LuckPerms
         String playerGroup = getPlayerGroup(player);
         String groupFormat = null;
 
-        // Сначала проверяем группу из LuckPerms
         if (playerGroup != null && config.isConfigurationSection("group-formats")) {
             groupFormat = config.getString("group-formats." + playerGroup);
         }
 
-        // Если не нашли по группе, проверяем пермишены как fallback
         if (groupFormat == null && config.isConfigurationSection("group-formats")) {
             for (String group : config.getConfigurationSection("group-formats").getKeys(false)) {
                 if (player.hasPermission("gchat.group." + group)) {
@@ -127,10 +157,14 @@ public class GChat extends JavaPlugin implements Listener {
             }
         }
 
-        String finalFormat = (groupFormat != null) ? groupFormat :
-                config.getString("default-format", "%player_name% &7» %message%");
+        String finalFormat = (groupFormat != null)
+                ? groupFormat
+                : config.getString("default-format", "%player_name% &7» %message%");
 
-        // Обработка формата
+        if (finalFormat == null || finalFormat.isEmpty()) {
+            finalFormat = "%player_name% » %message%";
+        }
+
         finalFormat = finalFormat.replace("%gchat_format%", baseFormat != null ? baseFormat : "");
         finalFormat = replacePlaceholders(player, finalFormat);
         finalFormat = finalFormat.replace("%message%", message);
@@ -142,103 +176,57 @@ public class GChat extends JavaPlugin implements Listener {
     }
 
     private String getPlayerGroup(Player player) {
-        // Только через LuckPerms API, без fallback на пермишены
-        if (Bukkit.getPluginManager().getPlugin("LuckPerms") != null) {
-            try {
-                Class<?> luckPermsClass = Class.forName("net.luckperms.api.LuckPerms");
-                Object serviceRegistration = Bukkit.getServicesManager().getRegistration(luckPermsClass);
+        if (!hasLuckPerms) {
+            // Fallback к permission-based группам
+            String[] testGroups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
+            for (String group : testGroups) {
+                if (player.hasPermission("gchat.group." + group)) {
+                    return group.toLowerCase();
+                }
+            }
+            return null;
+        }
 
-                if (serviceRegistration != null) {
-                    Object luckPerms = serviceRegistration.getClass().getMethod("getProvider").invoke(serviceRegistration);
-                    Object userManager = luckPerms.getClass().getMethod("getUserManager").invoke(luckPerms);
-                    Object user = userManager.getClass().getMethod("getUser", UUID.class).invoke(userManager, player.getUniqueId());
+        try {
+            Class<?> apiClass = luckPermsAPI.getClass();
+            Object user = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
+            user = user.getClass().getMethod("getUser", UUID.class).invoke(user, player.getUniqueId());
 
-                    if (user != null) {
-                        String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
-                        if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) {
-                            return primaryGroup.toLowerCase();
-                        }
+            if (user == null) {
+                return null;
+            }
 
-                        // Если primary group = default, ищем в inheritance
-                        Object nodes = user.getClass().getMethod("getNodes").invoke(user);
-                        if (nodes instanceof Iterable) {
-                            for (Object node : (Iterable<?>) nodes) {
-                                if (node.getClass().getSimpleName().equals("InheritanceNode")) {
-                                    String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
-                                    if (groupName != null && !groupName.equalsIgnoreCase("default")) {
-                                        return groupName.toLowerCase();
-                                    }
-                                }
-                            }
+            // Получаем основную группу
+            String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
+            if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) {
+                return primaryGroup.toLowerCase();
+            }
+
+            // Ищем группы в нодах
+            Object nodes = user.getClass().getMethod("getNodes").invoke(user);
+            if (nodes instanceof Iterable) {
+                for (Object node : (Iterable<?>) nodes) {
+                    String nodeClass = node.getClass().getSimpleName();
+                    if (nodeClass.equals("InheritanceNode")) {
+                        String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
+                        if (groupName != null && !groupName.equalsIgnoreCase("default")) {
+                            return groupName.toLowerCase();
                         }
                     }
                 }
-            } catch (Exception e) {
-                getLogger().warning("Failed to get group from LuckPerms: " + e.getMessage());
             }
-        }
-
-        return null;
-    }
-
-    private String getGroupFromSimpleCheck(Player player) {
-        // Проверяем группы даже для OP игроков
-        String[] groupsPriority = {
-                "owner", "admin", "administrator", "mod", "moderator",
-                "builder", "vip", "premium", "donator", "helper", "staff",
-                "elite", "legend", "titan", "youtuber", "streamer"
-        };
-
-        for (String group : groupsPriority) {
-            if (player.hasPermission("group." + group)) {
-                getLogger().info("Simple check: detected group " + group + " for player " + player.getName());
-                return group;
-            }
-        }
-
-        // Дополнительные проверки других форматов пермишенов
-        for (String group : groupsPriority) {
-            if (player.hasPermission("groups." + group) ||
-                    player.hasPermission("rank." + group) ||
-                    player.hasPermission("gchat.group." + group)) {
-                getLogger().info("Simple check: detected group " + group + " for player " + player.getName() + " via alternative permission");
-                return group;
-            }
-        }
-
-        getLogger().info("No group detected for player " + player.getName() + " (including OP check)");
-        return null;
-    }
-
-    private String getGroupFromPermissions(Player player) {
-        // Стандартные названия групп для проверки
-        String[] commonGroups = {"admin", "administrator", "mod", "moderator", "builder",
-                "vip", "premium", "donator", "helper", "staff"};
-
-        for (String group : commonGroups) {
-            // LuckPerms дает пермишены вида group.<groupname>
-            if (player.hasPermission("group." + group)) {
-                return group;
-            }
-            // Некоторые плагины используют groups.<groupname>
-            if (player.hasPermission("groups." + group)) {
-                return group;
-            }
-            // Прямые пермишены
-            if (player.hasPermission("gchat.group." + group)) {
-                return group;
-            }
+        } catch (Exception e) {
+            getLogger().warning("Failed to get group from LuckPerms: " + e.getMessage());
         }
 
         return null;
     }
 
     private String replacePlaceholders(Player player, String text) {
-        // Сначала базовые замены
         text = text.replace("%player_name%", player.getName())
-                .replace("%player_displayname%", player.getDisplayName());
+                .replace("%player_displayname%", player.getDisplayName())
+                .replace("%player_world%", player.getWorld().getName());
 
-        // Затем PlaceholderAPI если доступен
         if (hasPlaceholderAPI) {
             try {
                 Class<?> papiClass = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
@@ -288,14 +276,8 @@ public class GChat extends JavaPlugin implements Listener {
                 float ratio = (float) i / Math.max(1, length - 1);
                 java.awt.Color currentColor = interpolateColor(startColor, endColor, ratio);
 
-                // Конвертируем цвет в Minecraft HEX формат
                 gradient.append(colorToMinecraftHex(currentColor));
                 gradient.append(text.charAt(i));
-
-                // Сбрасываем цвет после каждого символа чтобы избежать наложения
-                if (i < length - 1) {
-                    gradient.append("§r");
-                }
             }
 
             return gradient.toString();
@@ -304,6 +286,7 @@ public class GChat extends JavaPlugin implements Listener {
             return text;
         }
     }
+
 
     private String colorToMinecraftHex(java.awt.Color color) {
         String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
@@ -339,18 +322,13 @@ public class GChat extends JavaPlugin implements Listener {
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (player.getWorld().equals(sender.getWorld()) &&
                     player.getLocation().distanceSquared(sender.getLocation()) <= radiusSquared) {
-                // НЕ отправляем сообщение отправителю здесь - он получит его отдельно
+                player.sendMessage(formattedMessage);
                 if (!player.getUniqueId().equals(sender.getUniqueId())) {
-                    player.sendMessage(formattedMessage);
                     recipients++;
                 }
             }
         }
 
-        // Отправляем сообщение отправителю ОДИН раз
-        sender.sendMessage(formattedMessage);
-
-        // Если никого нет в радиусе (кроме самого отправителя), отправляем сообщение о тишине
         if (recipients == 0 && config.getBoolean("local-chat.show-silent-message", true)) {
             sender.sendMessage(getMessage("local-chat-silent"));
         }
@@ -361,7 +339,6 @@ public class GChat extends JavaPlugin implements Listener {
             return;
         }
 
-        // Отправляем сообщение всем игрокам ОДИН раз
         for (Player player : Bukkit.getOnlinePlayers()) {
             player.sendMessage(formattedMessage);
         }
@@ -382,6 +359,23 @@ public class GChat extends JavaPlugin implements Listener {
         }
 
         return false;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (command.getName().equalsIgnoreCase("gchat")) {
+            if (args.length == 1) {
+                List<String> completions = new ArrayList<>();
+                if (sender.hasPermission("gchat.reload")) completions.add("reload");
+                if (sender.hasPermission("gchat.debug")) completions.add("debug");
+                completions.add("help");
+
+                return completions.stream()
+                        .filter(c -> c.startsWith(args[0].toLowerCase()))
+                        .collect(Collectors.toList());
+            }
+        }
+        return Collections.emptyList();
     }
 
     private boolean handleGChatCommand(CommandSender sender, String[] args) {
@@ -421,6 +415,10 @@ public class GChat extends JavaPlugin implements Listener {
                 break;
 
             case "debug":
+                if (!sender.hasPermission("gchat.debug")) {
+                    sender.sendMessage(getMessage("no-permission"));
+                    return true;
+                }
                 return handleDebugCommand(sender, args);
 
             default:
@@ -442,25 +440,22 @@ public class GChat extends JavaPlugin implements Listener {
         player.sendMessage("§7OP status: §e" + player.isOp());
         player.sendMessage("§7Username: §e" + player.getName());
 
-        // Проверяем основные групповые пермишены
-        String[] testGroups = {"group.owner", "group.admin", "group.moderator", "group.vip",
-                "group.builder", "group.premium", "group.donator"};
+        String[] testGroups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
 
-        player.sendMessage("§7=== LuckPerms Permissions ===");
-        for (String groupPerm : testGroups) {
-            if (player.hasPermission(groupPerm)) {
-                player.sendMessage("§a✓ " + groupPerm);
+        player.sendMessage("§7=== Permissions ===");
+        for (String group : testGroups) {
+            String perm = "gchat.group." + group;
+            if (player.hasPermission(perm)) {
+                player.sendMessage("§a✓ " + perm);
             } else {
-                player.sendMessage("§7✗ " + groupPerm);
+                player.sendMessage("§7✗ " + perm);
             }
         }
 
-        // Определяем группу через наш метод
         String detectedGroup = getPlayerGroup(player);
         player.sendMessage("§7=== Detected Group ===");
         player.sendMessage("§6Group: §e" + (detectedGroup != null ? detectedGroup : "none"));
 
-        // Показываем какой формат будет использован
         if (detectedGroup != null && config.isConfigurationSection("group-formats")) {
             String groupFormat = config.getString("group-formats." + detectedGroup);
             player.sendMessage("§7Format: §f" + (groupFormat != null ? groupFormat : "default"));
@@ -470,132 +465,194 @@ public class GChat extends JavaPlugin implements Listener {
     }
 
     private boolean handleGlobalCommand(CommandSender sender, String[] args) {
-        // НОВАЯ РЕАЛИЗАЦИЯ
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(getMessage("players-only"));
-            return true;
-        }
-
+        if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
-        // ВСЕГДА только меняем режим, игнорируем аргументы
-        playerChatModes.put(player.getUniqueId(), "global");
-        player.sendMessage(getMessage("chat-mode-global"));
+
+        if (args.length > 0) {
+            processChatMessage(player, String.join(" ", args), "global");
+        } else {
+            playerChatModes.put(player.getUniqueId(), "global");
+            player.sendMessage(getMessage("chat-mode-global"));
+        }
         return true;
     }
 
     private boolean handleLocalCommand(CommandSender sender, String[] args) {
-        // НОВАЯ РЕАЛИЗАЦИЯ
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(getMessage("players-only"));
-            return true;
-        }
-
+        if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
-        // ВСЕГДА только меняем режим, игнорируем аргументы
-        playerChatModes.put(player.getUniqueId(), "local");
-        player.sendMessage(getMessage("chat-mode-local"));
+
+        if (args.length > 0) {
+            processChatMessage(player, String.join(" ", args), "local");
+        } else {
+            playerChatModes.put(player.getUniqueId(), "local");
+            player.sendMessage(getMessage("chat-mode-local"));
+        }
         return true;
     }
 
     private boolean canUseColors(Player player) {
-        return player.hasPermission("gchat.color") || player.hasPermission("gchat.*");
+        return player.hasPermission("gchat.color");
     }
 
     private boolean canUseGradients(Player player) {
-        return player.hasPermission("gchat.gradient") || player.hasPermission("gchat.*");
+        return player.hasPermission("gchat.gradient");
     }
 
     private String processMessageColors(Player player, String message) {
         if (canUseColors(player)) {
-            // Разрешаем стандартные цветовые коды (&a, &b, и т.д.)
-            message = message.replace("&", "§");
+            return message.replace("&", "§");
         } else {
-            // Убираем цветовые коды если нет прав
-            message = message.replace("&0", "").replace("&1", "").replace("&2", "")
-                    .replace("&3", "").replace("&4", "").replace("&5", "")
-                    .replace("&6", "").replace("&7", "").replace("&8", "")
-                    .replace("&9", "").replace("&a", "").replace("&b", "")
-                    .replace("&c", "").replace("&d", "").replace("&e", "")
-                    .replace("&f", "").replace("&k", "").replace("&l", "")
-                    .replace("&m", "").replace("&n", "").replace("&o", "")
-                    .replace("&r", "");
+            // Более безопасное удаление цветовых кодов
+            return colorPattern.matcher(message).replaceAll("");
         }
-        return message;
     }
 
     private String processMessageGradients(Player player, String message) {
         if (canUseGradients(player)) {
-            // Разрешаем градиенты если есть права
-            message = applyGradients(message);
+            return applyGradients(message);
         } else {
-            // Убираем градиенты если нет прав
-            message = removeGradients(message);
+            return removeGradients(message);
         }
-        return message;
     }
 
     private String removeGradients(String text) {
-        // Удаляем все градиентные теги {#RRGGBB>} и {#RRGGBB<}
         return text.replaceAll("\\{#[0-9A-Fa-f]{6}>\\}", "")
                 .replaceAll("\\{#[0-9A-Fa-f]{6}<\\}", "");
     }
 
-    @EventHandler
-    public void onAsyncPlayerChatEvent(AsyncPlayerChatEvent event) {
-        if (!config.getBoolean("enabled", true)) {
+    private boolean checkCooldown(Player player) {
+        if (!config.getBoolean("message-cooldown.enabled", false)) {
+            return true;
+        }
+
+        if (player.hasPermission("gchat.bypass.cooldown")) {
+            return true;
+        }
+
+        long currentTime = System.currentTimeMillis();
+        long lastMessage = messageCooldowns.getOrDefault(player.getUniqueId(), 0L);
+        int cooldown = config.getInt("message-cooldown.seconds", 3) * 1000;
+
+        if (currentTime - lastMessage < cooldown) {
+            long remaining = (cooldown - (currentTime - lastMessage)) / 1000;
+            player.sendMessage(getMessage("message-cooldown").replace("{time}", String.valueOf(remaining)));
+            return false;
+        }
+
+        messageCooldowns.put(player.getUniqueId(), currentTime);
+        return true;
+    }
+
+    private boolean checkMessageLength(Player player, String message) {
+        int maxLength = config.getInt("max-message-length", 256);
+        if (message.length() > maxLength && !player.hasPermission("gchat.bypass.length")) {
+            player.sendMessage(getMessage("message-too-long").replace("{max}", String.valueOf(maxLength)));
+            return false;
+        }
+        return true;
+    }
+
+    private String filterBadWords(Player player, String message) {
+        if (!config.getBoolean("filter.enabled", false) || player.hasPermission("gchat.bypass.filter")) {
+            return message;
+        }
+
+        List<String> badWords = config.getStringList("filter.words");
+        String resultMessage = message;
+
+        for (String word : badWords) {
+            if (resultMessage.toLowerCase().contains(word.toLowerCase())) {
+                if (config.getBoolean("filter.block-message", true)) {
+                    player.sendMessage(getMessage("message-blocked"));
+                    return null; // блокируем сообщение
+                } else {
+                    String replacement = String.join("", Collections.nCopies(word.length(), "*"));
+                    resultMessage = resultMessage.replaceAll("(?i)" + Pattern.quote(word), replacement);
+                }
+            }
+        }
+
+        return resultMessage;
+    }
+
+    private boolean hasChatPermission(Player player, String chatType) {
+        // OP или игрок с bypass всегда могут писать
+        if (player.hasPermission("gchat.bypass")) return true;
+
+        // Все игроки имеют базовый доступ "из коробки"
+        if (chatType.equalsIgnoreCase("global") || chatType.equalsIgnoreCase("local")) return true;
+
+        return true; // на всякий случай
+    }
+
+
+    private void processChatMessage(Player player, String originalMessage, String chatMode) {
+        // Проверка разрешения на использование чата
+        if (!hasChatPermission(player, chatMode)) {
             return;
         }
 
-        Player player = event.getPlayer();
-        String originalMessage = event.getMessage();
-        String chatMode = playerChatModes.getOrDefault(player.getUniqueId(),
-                config.getString("default-chat-mode", "local"));
-
-        // Проверка на глобальное сообщение с !
-        boolean isGlobalMessage = originalMessage.startsWith("!");
-        if (isGlobalMessage) {
-            originalMessage = originalMessage.substring(1).trim();
-            chatMode = "global";
+        // Проверка кулдауна
+        if (!checkCooldown(player)) {
+            return;
         }
 
-        // Отмена стандартного сообщения
-        event.setCancelled(true);
-
-        // Логирование чистого оригинального сообщения ДО обработки
-        if (config.getBoolean("log-to-console", false) && config.getBoolean("log-original-message", true)) {
-            String cleanMessage = originalMessage.replace("&", "").replace("§", "");
-            String mode = isGlobalMessage ? "GLOBAL" : chatMode.toUpperCase();
-            Bukkit.getLogger().info("[" + mode + "] " + player.getName() + ": " + cleanMessage);
+        // Проверка длины сообщения
+        if (!checkMessageLength(player, originalMessage)) {
+            return;
         }
 
-        // Обработка цветов и градиентов в сообщении (ПОСЛЕ логирования)
-        String processedMessage = processMessageColors(player, originalMessage);
+        // Фильтрация плохих слов
+        String filteredMessage = filterBadWords(player, originalMessage);
+        if (filteredMessage == null) {
+            return; // сообщение заблокировано
+        }
+
+
+        // Обработка цветов и градиентов
+        String processedMessage = processMessageColors(player, filteredMessage);
         processedMessage = processMessageGradients(player, processedMessage);
 
         // Форматирование сообщения
         String formattedMessage = formatMessage(player, processedMessage, chatMode);
 
         // Отправка сообщения
-        if (chatMode.equals("local") && !isGlobalMessage) {
+        if (chatMode.equals("local")) {
             sendLocalMessage(player, formattedMessage);
         } else {
             sendGlobalMessage(formattedMessage);
         }
+
+        // Логирование в консоль
+        if (config.getBoolean("log-to-console", false)) {
+            String cleanMessage = originalMessage.replace("&", "").replace("§", "");
+            String mode = chatMode.toUpperCase();
+            Bukkit.getLogger().info("[" + mode + "] " + player.getName() + ": " + cleanMessage);
+        }
     }
 
-    private String stripColorCodes(String text) {
-        if (text == null) return "";
+    @EventHandler
+    public void onAsyncPlayerChatEvent(AsyncPlayerChatEvent event) {
+        if (!config.getBoolean("enabled", true)) return;
 
-        // Удаляем все цветовые коды Minecraft (§a, §b, §1, etc.)
-        text = text.replaceAll("§[0-9a-fk-or]", "");
+        Player player = event.getPlayer();
+        String originalMessage = event.getMessage();
+        String chatMode = playerChatModes.getOrDefault(player.getUniqueId(),
+                config.getString("default-chat-mode", "local"));
 
-        // Удаляем HEX цветовые коды (§x§f§f§f§f§5§5)
-        text = text.replaceAll("§x(§[0-9a-f]){6}", "");
+        if (originalMessage.startsWith("!")) {
+            originalMessage = originalMessage.substring(1).trim();
+            chatMode = "global";
+        } else {
+            chatMode = chatMode.toLowerCase();
+        }
 
-        // Удаляем оставшиеся § символы
-        text = text.replace("§", "");
+        final Player finalPlayer = player;
+        final String finalMessage = originalMessage;
+        final String finalChatMode = chatMode;
 
-        return text.trim();
+        event.setCancelled(true);
+        Bukkit.getScheduler().runTask(this, () -> processChatMessage(finalPlayer, finalMessage, finalChatMode));
     }
 
     private void sendHelp(CommandSender sender) {
@@ -604,16 +661,23 @@ public class GChat extends JavaPlugin implements Listener {
                 sender.sendMessage(line.replace("&", "§"));
             }
         } else {
-            // Fallback help
             sender.sendMessage("§6§l=== gChat Help ===");
             sender.sendMessage("§e/gchat reload §7- Перезагрузить конфигурацию");
             sender.sendMessage("§e/gchat help §7- Показать эту помощь");
+            sender.sendMessage("§e/gchat debug §7- Debug информация");
             sender.sendMessage("§e/g §7- Переключиться на глобальный чат");
             sender.sendMessage("§e/g <сообщение> §7- Отправить глобальное сообщение");
             sender.sendMessage("§e/l §7- Переключиться на локальный чат");
             sender.sendMessage("§e/l <сообщение> §7- Отправить локальное сообщение");
             sender.sendMessage("§e!<сообщение> §7- Отправить разовое глобальное сообщение");
-            sender.sendMessage("§6Градиенты в конфиге: §7{#RRGGBB>}Text{#RRGGBB<}");
+            sender.sendMessage("§6Градиенты: §7{#RRGGBB>}Text{#RRGGBB<}");
+
+            // Информация о разрешениях
+            if (sender.hasPermission("gchat.use")) {
+                sender.sendMessage("§a✓ Вы имеете доступ к чату");
+            } else {
+                sender.sendMessage("§c✗ У вас нет доступа к чату");
+            }
         }
     }
 }
