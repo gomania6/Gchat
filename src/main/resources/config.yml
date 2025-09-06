@@ -34,7 +34,7 @@ global-chat:
 # Форматы групп
 # ==============================
 group-formats:
-  owner: "%gchat_format%&c[Owner] %player_name% &7» %message%"
+  owner: "%gchat_format%&c[Owner] %player_name% &7» %message%" #Верхняя группа для OP прав
   admin: "%gchat_format%&4[Admin] %player_name% &7» %message%"
   moderator: "%gchat_format%&2[Mod] %player_name% &7» %message%"
   vip: "%gchat_format%&6[VIP] %player_name% &7» %message%"
