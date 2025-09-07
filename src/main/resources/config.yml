@@ -5,7 +5,7 @@
 enabled: true
 language: ru
 default-chat-mode: local
-log-to-console: true
+log-to-console: true 
 
 # ==============================
 # Локальный чат
@@ -27,16 +27,12 @@ global-chat:
 # Форматы групп
 # ==============================
 group-formats:
-  owner: "%gchat_format%&c[Owner] %player_name% &7» %message%" #Верхняя группа для OP прав
-  admin: "%gchat_format%&4[Admin] %player_name% &7» %message%"
-  moderator: "%gchat_format%&2[Mod] %player_name% &7» %message%"
-  vip: "%gchat_format%&6[VIP] %player_name% &7» %message%"
-  premium: "%gchat_format%&b[Premium] %player_name% &7» %message%"
-  donator: "%gchat_format%&d[Donator] %player_name% &7» %message%"
-  builder: "%gchat_format%&3[Builder] %player_name% &7» %message%"
+  legend: "{#ff69b4>}%player_name%{#8a2be2<} &7» %message%"
+  emerald: "{#50C878>}%player_name%{#00FF00<} &7» %message%"
+  diamond: "{#00BFFF>}%player_name%{#1E90FF<} &7» %message%"
 
 # Формат по умолчанию (если игрок не в группе)
-default-format: "%gchat_format%&f%player_name% &7» %message%"
+default-format: "%luckperms_suffix%%player_name%&7 » %message%"
 
 # ==============================
 # Ограничения
@@ -80,18 +76,3 @@ blocked-commands:
 # ==============================
 join-message: "&8[&a+&8] &f%player_name%"
 quit-message: "&8[&c-&8] &f%player_name%"
-
-# ==============================
-# Помощь (/gchat help)
-# ==============================
-help:
-  - "&6§l=== gChat Help ==="
-  - "&e/gchat reload §7- Перезагрузить конфигурацию"
-  - "&e/gchat help §7- Показать эту помощь"
-  - "&e/gchat debug §7- Debug информация"
-  - "&e/g §7- Переключиться на глобальный чат"
-  - "&e/g <сообщение> §7- Отправить глобальное сообщение"
-  - "&e/l §7- Переключиться на локальный чат"
-  - "&e/l <сообщение> §7- Отправить локальное сообщение"
-  - "&e!<сообщение> §7- Разовое глобальное сообщение"
-  - "&6Градиенты: §7{#RRGGBB>}Text{#RRGGBB<}"

@@ -107,6 +107,11 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private void reloadConfigValues() {
+        // Создаём дефолтный config.yml, если нет
+        if (!new File(getDataFolder(), "config.yml").exists()) {
+            saveDefaultConfig();
+        }
+
         reloadConfig();
         config = getConfig();
         reloadMessages();
@@ -116,6 +121,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         joinMessage = config.getString("join-message", "");
         quitMessage = config.getString("quit-message", "");
 
+        // Проверка зависимостей
         hasPlaceholderAPI = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
         hasLuckPerms = Bukkit.getPluginManager().getPlugin("LuckPerms") != null;
 
@@ -130,6 +136,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
     }
 
+
     // ================== Чат ==================
     private String formatMessage(Player player, String message, String chatMode) {
         String baseFormat = chatMode.equals("local")
@@ -139,24 +146,20 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         String playerGroup = getPlayerGroup(player);
         String groupFormat = null;
 
-        if (playerGroup != null && config.isConfigurationSection("group-formats")) {
+        // проверяем только то, что реально есть в group-formats
+        if (playerGroup != null
+                && config.isConfigurationSection("group-formats")
+                && config.getConfigurationSection("group-formats").contains(playerGroup)) {
             groupFormat = config.getString("group-formats." + playerGroup);
         }
 
-        if (groupFormat == null && config.isConfigurationSection("group-formats")) {
-            for (String group : config.getConfigurationSection("group-formats").getKeys(false)) {
-                if (player.hasPermission("gchat.group." + group)) {
-                    groupFormat = config.getString("group-formats." + group);
-                    break;
-                }
-            }
-        }
-
+        // всё остальное -> default-format
         String finalFormat = (groupFormat != null)
                 ? groupFormat
                 : config.getString("default-format", "%player_name% &7» %message%");
 
-        if (finalFormat == null || finalFormat.isEmpty()) finalFormat = "%player_name% » %message%";
+        if (finalFormat == null || finalFormat.isEmpty())
+            finalFormat = "%player_name% » %message%";
 
         finalFormat = finalFormat.replace("%gchat_format%", baseFormat != null ? baseFormat : "");
         finalFormat = replacePlaceholders(player, finalFormat);
@@ -169,46 +172,89 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private String getPlayerGroup(Player player) {
-        if (!hasLuckPerms) {
-            String[] groups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
-            for (String group : groups) {
-                if (player.hasPermission("gchat.group." + group)) return group.toLowerCase();
-            }
-            return null;
-        }
+        if (!hasLuckPerms || luckPermsAPI == null) return null;
 
         try {
+            // Получаем User из LuckPerms
             Class<?> apiClass = luckPermsAPI.getClass();
             Object userManager = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
-            Object user = userManager.getClass().getMethod("getUser", UUID.class).invoke(userManager, player.getUniqueId());
+            Object user = userManager.getClass().getMethod("getUser", UUID.class)
+                    .invoke(userManager, player.getUniqueId());
 
             if (user == null) return null;
 
-            String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
-            if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) return primaryGroup.toLowerCase();
+            // Получаем список групп из конфига
+            Set<String> configGroups = new HashSet<>();
+            if (config.isConfigurationSection("group-formats")) {
+                configGroups.addAll(config.getConfigurationSection("group-formats").getKeys(false)
+                        .stream().map(String::toLowerCase).collect(Collectors.toSet()));
+            }
 
+            // Основная группа игрока
+            String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
+            if (primaryGroup != null && configGroups.contains(primaryGroup.toLowerCase())) {
+                return primaryGroup.toLowerCase();
+            }
+
+            // Если основной группы нет в конфиге, ищем через наследование
             Object nodes = user.getClass().getMethod("getNodes").invoke(user);
             if (nodes instanceof Iterable) {
                 for (Object node : (Iterable<?>) nodes) {
-                    String nodeClass = node.getClass().getSimpleName();
-                    if (nodeClass.equals("InheritanceNode")) {
+                    if (node.getClass().getSimpleName().equals("InheritanceNode")) {
                         String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
-                        if (groupName != null && !groupName.equalsIgnoreCase("default")) return groupName.toLowerCase();
+                        if (groupName != null && configGroups.contains(groupName.toLowerCase())) {
+                            return groupName.toLowerCase();
+                        }
                     }
                 }
             }
+
         } catch (Exception e) {
-            getLogger().warning("Failed to get group from LuckPerms: " + e.getMessage());
+            getLogger().warning("Не удалось получить группу игрока через LuckPerms: " + e.getMessage());
         }
 
+        // Если ни одна группа не совпала с конфигом — вернём null, чтобы использовался default-format
         return null;
     }
 
     private String replacePlaceholders(Player player, String text) {
+        if (text == null || text.isEmpty()) return "";
+
+        // Базовые замены
         text = text.replace("%player_name%", player.getName())
-                .replace("%player_displayname%", player.getDisplayName())
                 .replace("%player_world%", player.getWorld().getName());
 
+        // ==========================
+        // Подставляем суффикс LuckPerms
+        if (hasLuckPerms && text.contains("%luckperms_suffix%")) {
+            try {
+                Class<?> apiClass = luckPermsAPI.getClass();
+                Object userManager = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
+                Object user = userManager.getClass().getMethod("getUser", UUID.class)
+                        .invoke(userManager, player.getUniqueId());
+
+                if (user != null) {
+                    Object cachedData = user.getClass().getMethod("getCachedData").invoke(user);
+                    Object metaData = cachedData.getClass().getMethod("getMetaData").invoke(cachedData);
+                    String suffix = (String) metaData.getClass().getMethod("getSuffix").invoke(metaData);
+
+                    if (suffix != null && !suffix.isEmpty()) {
+                        suffix = applyHexColors(suffix); // ✅ преобразуем &#RRGGBB → §x§R§R...
+                        text = text.replace("%luckperms_suffix%", suffix);
+                    } else {
+                        text = text.replace("%luckperms_suffix%", "");
+                    }
+                } else {
+                    text = text.replace("%luckperms_suffix%", "");
+                }
+            } catch (Exception e) {
+                getLogger().warning("Не удалось получить суффикс LuckPerms: " + e.getMessage());
+                text = text.replace("%luckperms_suffix%", "");
+            }
+        }
+
+        // ==========================
+        // PlaceholderAPI (если установлен)
         if (hasPlaceholderAPI) {
             try {
                 Class<?> papiClass = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
@@ -221,6 +267,29 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
 
         return text;
+    }
+
+    /**
+     * Конвертирует Hex-цвета формата &#RRGGBB в §x§R§R...
+     */
+    private String applyHexColors(String text) {
+        if (text == null) return "";
+
+        Pattern pattern = Pattern.compile("&#([A-Fa-f0-9]{6})");
+        Matcher matcher = pattern.matcher(text);
+        StringBuffer buffer = new StringBuffer();
+
+        while (matcher.find()) {
+            String hex = matcher.group(1);
+            StringBuilder replacement = new StringBuilder("§x");
+            for (char c : hex.toCharArray()) {
+                replacement.append("§").append(c);
+            }
+            matcher.appendReplacement(buffer, replacement.toString());
+        }
+        matcher.appendTail(buffer);
+
+        return buffer.toString();
     }
 
     private String applyGradients(String text) {
@@ -241,6 +310,8 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
         return result.toString();
     }
+
+
 
     private String createGradient(String text, String startHex, String endHex) {
         if (text == null || text.isEmpty()) return "";
@@ -373,27 +444,68 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private boolean handleDebugCommand(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player)) { sender.sendMessage(getMessage("players-only")); return true; }
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(getMessage("players-only"));
+            return true;
+        }
         Player player = (Player) sender;
 
         player.sendMessage("§6=== Group Debug ===");
         player.sendMessage("§7OP status: §e" + player.isOp());
         player.sendMessage("§7Username: §e" + player.getName());
 
-        String[] testGroups = {"owner", "admin", "moderator", "vip", "builder", "premium", "donator"};
-        player.sendMessage("§7=== Permissions ===");
-        for (String group : testGroups) {
-            String perm = "gchat.group." + group;
-            player.sendMessage(player.hasPermission(perm) ? "§a✓ " + perm : "§7✗ " + perm);
+        if (!hasLuckPerms || luckPermsAPI == null) {
+            player.sendMessage("§cLuckPerms не найден или не инициализирован");
+            return true;
         }
 
-        String detectedGroup = getPlayerGroup(player);
-        player.sendMessage("§7=== Detected Group ===");
-        player.sendMessage("§6Group: §e" + (detectedGroup != null ? detectedGroup : "none"));
+        try {
+            // Получаем пользователя через LuckPerms
+            Class<?> apiClass = luckPermsAPI.getClass();
+            Object userManager = apiClass.getMethod("getUserManager").invoke(luckPermsAPI);
+            Object user = userManager.getClass().getMethod("getUser", UUID.class)
+                    .invoke(userManager, player.getUniqueId());
 
-        if (detectedGroup != null && config.isConfigurationSection("group-formats")) {
-            String groupFormat = config.getString("group-formats." + detectedGroup);
-            player.sendMessage("§7Format: §f" + (groupFormat != null ? groupFormat : "default"));
+            if (user == null) {
+                player.sendMessage("§cИгрок не найден в LuckPerms");
+                return true;
+            }
+
+            // Основная группа
+            String primaryGroup = (String) user.getClass().getMethod("getPrimaryGroup").invoke(user);
+            if (primaryGroup != null && !primaryGroup.equalsIgnoreCase("default")) {
+                player.sendMessage("§7Primary Group: §e" + primaryGroup);
+            } else {
+                player.sendMessage("§7Primary Group: §cdefault");
+            }
+
+            // Получаем группы, которые реально есть в конфиге group-formats
+            Set<String> configGroups = new HashSet<>();
+            if (config.isConfigurationSection("group-formats")) {
+                configGroups.addAll(config.getConfigurationSection("group-formats").getKeys(false));
+            }
+
+            Object nodes = user.getClass().getMethod("getNodes").invoke(user);
+            if (nodes instanceof Iterable) {
+                player.sendMessage("§7=== Groups in config ===");
+                for (Object node : (Iterable<?>) nodes) {
+                    if (node.getClass().getSimpleName().equals("InheritanceNode")) {
+                        String groupName = (String) node.getClass().getMethod("getGroupName").invoke(node);
+                        if (groupName != null && configGroups.contains(groupName.toLowerCase())) {
+                            player.sendMessage("§e- " + groupName);
+                        }
+                    }
+                }
+            }
+
+            // Суффикс
+            Object cachedData = user.getClass().getMethod("getCachedData").invoke(user);
+            Object metaData = cachedData.getClass().getMethod("getMetaData").invoke(cachedData);
+            String suffix = (String) metaData.getClass().getMethod("getSuffix").invoke(metaData);
+            player.sendMessage("§7Suffix: §f" + (suffix != null ? suffix : "none"));
+
+        } catch (Exception e) {
+            player.sendMessage("§cОшибка при получении данных LuckPerms: " + e.getMessage());
         }
 
         return true;
