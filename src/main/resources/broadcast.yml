@@ -1,0 +1,11 @@
+# broadcast.yml
+enabled: true
+interval: 10
+header: "&6&l=== СЕРВЕРНОЕ ОБЪЯВЛЕНИЕ ==="
+footer: "&7Спасибо за игру на нашем сервере!"
+messages:
+  - "&aНе забудьте прочитать правила сервера!"
+  - "&bПрисоединяйтесь к нашему Discord: https://discord.gg/example"
+  - "&cВнимание! Запрещено использование читов!"
+  - "&dНаш сайт: example.com"
+  - "&eПоддержите сервер: donate.example.com"

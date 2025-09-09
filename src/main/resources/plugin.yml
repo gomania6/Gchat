@@ -1,5 +1,5 @@
 name: gChat
-version: 1.2.0
+version: 1.3.0
 main: com.Gomania.gChat.GChat
 api-version: 1.21
 softdepend:
@@ -21,6 +21,11 @@ commands:
     description: Переключение или отправка локального сообщения
     usage: /<command> [сообщение]
     permission: gchat.local
+
+  broadcast:
+    description: Broadcast messages
+    usage: /broadcast <номер|next|reload>
+    permission: gchat.broadcast
 
 permissions:
   gchat.*:

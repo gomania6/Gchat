@@ -3,16 +3,16 @@
 # ==============================
 
 enabled: true
-language: ru
+language: ru # ru en
 default-chat-mode: local
-log-to-console: true 
+log-to-console: true
 
 # ==============================
 # Локальный чат
 # ==============================
 local-chat:
   enabled: true
-  format: "&8[Локально]"
+  format: "&8[Локально]" # %gchat_format%
   radius: 50
   show-silent-message: true # Добавляет сообщение (В радиусе никого нет... Тишина.
 
@@ -21,24 +21,22 @@ local-chat:
 # ==============================
 global-chat:
   enabled: true
-  format: "&8[Глобально]"
+  format: "&8[Глобально]" # %gchat_format%
 
 # ==============================
 # Форматы групп
 # ==============================
 group-formats:
-  legend: "{#ff69b4>}%player_name%{#8a2be2<} &7» %message%"
-  emerald: "{#50C878>}%player_name%{#00FF00<} &7» %message%"
-  diamond: "{#00BFFF>}%player_name%{#1E90FF<} &7» %message%"
+  legend: "%gchat_format%{#ff69b4>}%player_name%{#8a2be2<} &7» %message%"
+  emerald: "%gchat_format%{#50C878>}%player_name%{#00FF00<} &7» %message%"
+  diamond: "%gchat_format%{#00BFFF>}%player_name%{#1E90FF<} &7» %message%"
 
 # Формат по умолчанию (если игрок не в группе)
-default-format: "%luckperms_suffix%%player_name%&7 » %message%"
+default-format: "%gchat_format%%luckperms_suffix%%player_name%&7 » %message%"
 
 # ==============================
 # Ограничения
 # ==============================
-
-# Ограничение длины сообщения
 max-message-length: 256
 
 # Кулдаун на сообщения
@@ -65,14 +63,22 @@ filter:
 # ==============================
 # Фильтр команд
 # ==============================
+block-commands-enabled: true
 blocked-commands:
-  - "/op"
-  - "/gamemode"
-  - "/ban"
-  - "/kick"
-
+  - "me"
+  - "tell"
+  - "msg"
+  - "whisper"
+  - "w"
+  - "say"
+  - "pl"
+  - "plugins"
+  - "help"
+  - "?"
 # ==============================
 # Сообщения входа/выхода
 # ==============================
-join-message: "&8[&a+&8] &f%player_name%"
-quit-message: "&8[&c-&8] &f%player_name%"
+join-quit-messages:
+  enabled: true
+  join-message: "&a+ &7%player_name% &aприсоединился к серверу"
+  quit-message: "&c- &7%player_name% &cпокинул сервер"
