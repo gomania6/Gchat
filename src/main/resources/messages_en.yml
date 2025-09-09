@@ -14,7 +14,7 @@ local-chat-silent: "{prefix} &cNo one heard your local message."
 
 chat-mode-global: "{prefix} &aYou switched to global chat."
 chat-mode-local: "{prefix} &aYou switched to local chat."
-
+illegal-link: "{prefix} &c[illegal link]"
 # Help (customize if you want)
 help:
   - "&6=== gChat Help ==="
