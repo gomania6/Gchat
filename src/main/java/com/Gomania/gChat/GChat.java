@@ -101,13 +101,21 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
     @Override
     public void onEnable() {
+        // Создаём папку плагина, если не существует
+        if (!getDataFolder().exists()) {
+            getDataFolder().mkdirs();
+        }
+
+        // Сохраняем default config.yml если его нет
         saveDefaultConfig();
         config = getConfig();
+
         setupMessages();
         setupBroadcastConfig();
         reloadConfigValues();
 
         getServer().getPluginManager().registerEvents(this, this);
+        getCommand("msg").setExecutor(new MsgCommand(this));
 
         checkDependencies();
         setupBroadcast();
@@ -425,8 +433,13 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
     }
 
     private void sendLocalMessage(Player sender, String formattedMessage) {
-        if (!config.getBoolean("local-chat.enabled", true)) {
-            sender.sendMessage(getMessage("local-chat-disabled"));
+        boolean localChatEnabled = config.getBoolean("local-chat.enabled", true);
+        boolean showDisabledMessage = config.getBoolean("local-chat.show-disabled-local-chat", true);
+
+        if (!localChatEnabled) {
+            if (showDisabledMessage) {
+                sender.sendMessage(getMessage("local-chat-disabled"));
+            }
             return;
         }
 
@@ -494,15 +507,12 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
 
         switch (args[0].toLowerCase()) {
             case "reload":
-                if (!sender.hasPermission("gchat.reload")) { sender.sendMessage(getMessage("no-permission")); return true; }
-                if (sender instanceof Player) {
-                    Player player = (Player) sender;
-                    if (!reloadCooldown.check(player.getUniqueId(), config.getInt("reload-cooldown", 5))) {
-                        long remaining = reloadCooldown.getRemaining(player.getUniqueId(), config.getInt("reload-cooldown", 5));
-                        sender.sendMessage(getMessage("reload-cooldown").replace("{time}", String.valueOf(remaining)));
-                        return true;
-                    }
+                if (!sender.hasPermission("gchat.reload")) {
+                    sender.sendMessage(getMessage("no-permission"));
+                    return true;
                 }
+
+                reloadPluginConfig(); // <-- вызываем здесь
                 reloadConfigValues();
                 sender.sendMessage(getMessage("config-reloaded"));
                 break;
@@ -817,6 +827,16 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         }
     }
 
+    public void reloadPluginConfig() {
+        // Если config.yml нет — создаём
+        File configFile = new File(getDataFolder(), "config.yml");
+        if (!configFile.exists()) {
+            saveDefaultConfig();
+        }
+        reloadConfig();
+        config = getConfig();
+    }
+
     // ================== Вспомогательные классы ==================
 
     /**
@@ -993,6 +1013,7 @@ public class GChat extends JavaPlugin implements Listener, TabCompleter {
         int b = Math.max(0, Math.min(255, (int)(start.getBlue() + ratio * (end.getBlue() - start.getBlue()))));
         return new java.awt.Color(r, g, b);
     }
+
 
     private static String colorToMinecraftHex(java.awt.Color color) {
         String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());

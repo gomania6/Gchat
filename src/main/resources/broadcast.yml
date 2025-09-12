@@ -1,6 +1,6 @@
 # broadcast.yml
 enabled: true
-interval: 10
+interval: 10 # seconds
 header: "&6&l=== СЕРВЕРНОЕ ОБЪЯВЛЕНИЕ ==="
 footer: "&7Спасибо за игру на нашем сервере!"
 messages:

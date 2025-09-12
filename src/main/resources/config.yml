@@ -15,7 +15,7 @@ local-chat:
   format: "&8[Локально]" # %gchat_format%
   radius: 50
   show-silent-message: true # Добавляет сообщение (В радиусе никого нет... Тишина.
-
+  show-disabled-local-chat: true # Показывать сообщение при отключённом локальном чате
 # ==============================
 # Глобальный чат
 # ==============================
@@ -63,13 +63,8 @@ filter:
 # ==============================
 # Фильтр команд
 # ==============================
-block-commands-enabled: true
 blocked-commands:
   - "me"
-  - "tell"
-  - "msg"
-  - "whisper"
-  - "w"
   - "say"
   - "pl"
   - "plugins"
@@ -78,7 +73,17 @@ blocked-commands:
 # ==============================
 # Сообщения входа/выхода
 # ==============================
-join-quit-messages:
+join-message: "&a+ &7%player_name% &aприсоединился к серверу"
+quit-message: "&c- &7%player_name% &cпокинул сервер"
+
+# ==============================
+# Личные сообщения
+# ==============================
+# Доступные переменные:
+# %sender% - отправитель
+# %receiver% - получатель
+# %message% - текст сообщения
+private-message:
   enabled: true
-  join-message: "&a+ &7%player_name% &aприсоединился к серверу"
-  quit-message: "&c- &7%player_name% &cпокинул сервер"
+  format-to-receiver: "&7[&aЛС от %sender%&7]: &f%message%"
+  format-to-sender: "&7[&aЛС для %receiver%&7]: &f%message%"

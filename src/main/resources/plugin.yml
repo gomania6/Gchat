@@ -1,5 +1,5 @@
 name: gChat
-version: 1.3.1
+version: 1.4.0
 main: com.Gomania.gChat.GChat
 api-version: 1.21
 softdepend:
@@ -22,6 +22,10 @@ commands:
     usage: /<command> [сообщение]
     permission: gchat.local
 
+  msg:
+    description: Отправить личное сообщение игроку
+    usage: /msg <игрок> <сообщение>
+    aliases: [tell, w]
 permissions:
   gchat.*:
     description: Доступ ко всем функциям gChat
